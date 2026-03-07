@@ -11,13 +11,13 @@ ADMIN_IDS = [760217595, 1486385025]  # Список админов
 
 # Настройки оплаты (можно менять)
 PAYMENT_SETTINGS = {
-    "card_number": "2204320942838634",
-    "ukr_card_number": "5100947332611649",  # Украинская карта
+    "card_number": "2204321114637127",
+    "ukr_card_number": "Оплата украинской картой, не поддерживается, на время",  # Украинская карта
     "crypto_bot_link": "http://t.me/send?start=IVYmg0VNAOof",
     "ton_wallet": "UQDZLYLq_FZkjdBSKxKC75xDV_q4j1Jl9yY4SIbg5Rkk6Op_",
     "trc20_wallet": "TRvgVquVHPaddvWRJL7p5z5phM2sLSQqsf",
-    "support_username": "Manager_uop",
-    "stars_instruction": "https://telegra.ph/Instrukciya-02-08-25"
+    "support_username": "Manager_yopa",
+    "stars_instruction": "https://telegra.ph/Instrukciya-03-07-17"
 }
 
 # Инициализация БД
@@ -871,6 +871,58 @@ def pay_cryptobot(call):
         call.from_user,
         f"Тариф: {tariff['name']}\nСумма: {tariff['price_usd']}$"
     )
+
+
+# Добавьте этот обработчик после pay_cryptobot
+@bot.callback_query_handler(func=lambda call: call.data.startswith('pay_crypto_'))
+def pay_crypto(call):
+    # Извлекаем индекс тарифа
+    parts = call.data.split('_')
+    if len(parts) >= 3:
+        index = int(parts[2])  # pay_crypto_0
+    else:
+        # Альтернативный способ если формат другой
+        index = int(call.data[10:])
+    
+    tariff = tariffs_data[index]
+    
+    # Создаем клавиатуру с информацией
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    btn_paid = types.InlineKeyboardButton("✅ Я оплатил", callback_data=f'paid_{index}_crypto')
+    btn_cancel = types.InlineKeyboardButton("✖️ Отменить", callback_data='show_categories')
+    markup.add(btn_paid, btn_cancel)
+    
+    text = f"""<b>Тариф:</b> {tariff['name']}
+<b>Способ оплаты:</b> 💵 Криптовалюта
+<b>Сумма к оплате:</b> {tariff['price_usd']}$
+
+<b>Информация об оплате:</b>
+Переведите {tariff['price_usd']}$ на один из кошельков:
+
+<b>TON (USDT):</b>
+<code>{PAYMENT_SETTINGS['ton_wallet']}</code>
+
+<b>TRC20 (USDT):</b>
+<code>{PAYMENT_SETTINGS['trc20_wallet']}</code>
+
+(нажмите на адрес выше, чтобы скопировать)
+
+⚠️ После оплаты нажмите кнопку "✅ Я оплатил" и отправьте скриншот подтверждения"""
+
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=text,
+        reply_markup=markup,
+        parse_mode='HTML'
+    )
+    
+    notify_admins(
+        "💵 Запрос на оплату криптовалютой", 
+        call.from_user,
+        f"Тариф: {tariff['name']}\nСумма: {tariff['price_usd']}$"
+    )
+
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('pay_stars_'))
 def pay_stars(call):
