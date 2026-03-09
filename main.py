@@ -8,8 +8,8 @@ from datetime import datetime
 import copy
 import threading
 
-bot = telebot.TeleBot("8649301263:AAHwnJGpKE-iJ7JdMuGZ-rysDctnGWyugp0")
-ADMIN_IDS = [760217595]  # Список админов
+bot = telebot.TeleBot("8636956440:AAGDPqOYsexWu4nnXsoAhfq6X71G2dlOYDE")
+ADMIN_IDS = [760217595, 1486385025]  # Список админов
 
 # Настройки оплаты (можно менять)
 PAYMENT_SETTINGS = {
