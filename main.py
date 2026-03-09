@@ -5,9 +5,11 @@ import requests
 from io import BytesIO
 import sqlite3
 from datetime import datetime
+import copy
+import threading
 
-bot = telebot.TeleBot("8636956440:AAGDPqOYsexWu4nnXsoAhfq6X71G2dlOYDE")
-ADMIN_IDS = [760217595, 1486385025]  # Список админов
+bot = telebot.TeleBot("8649301263:AAHwnJGpKE-iJ7JdMuGZ-rysDctnGWyugp0")
+ADMIN_IDS = [760217595]  # Список админов
 
 # Настройки оплаты (можно менять)
 PAYMENT_SETTINGS = {
@@ -94,6 +96,26 @@ def get_receipt_by_id(receipt_id):
     receipt = c.fetchone()
     conn.close()
     return receipt
+
+# Функция для рассылки всем юзерам
+def broadcast_to_users(text, photo=None):
+    conn = sqlite3.connect('bot_database.db')
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users")
+    users = c.fetchall()
+    conn.close()
+    
+    count = 0
+    for (uid,) in users:
+        try:
+            if photo:
+                bot.send_photo(uid, photo, caption=text)
+            else:
+                bot.send_message(uid, text)
+            count += 1
+        except:
+            pass
+    return count
 
 # Словарь с описаниями и ценами
 tariffs_data = {
@@ -438,9 +460,45 @@ categories_list = [
     "🥵EXСLUSIVЕ🥵-4500₽"
 ]
 
+# Бэкап оригинальных цен для восстановления после скидки
+ORIGINAL_TARIFFS_DATA = copy.deepcopy(tariffs_data)
+ORIGINAL_CATEGORIES_LIST = copy.deepcopy(categories_list)
+
 # Хранилище состояний пользователей
 user_states = {}
 admin_reply_states = {}  # Для отслеживания ответов админа
+admin_states_data = {}   # Для новых функций админки (рассылка, скидки)
+discount_timer = None
+
+# Функции работы со скидками
+def remove_discount():
+    global tariffs_data, categories_list, discount_timer
+    tariffs_data.update(copy.deepcopy(ORIGINAL_TARIFFS_DATA))
+    for i in range(len(categories_list)):
+        categories_list[i] = ORIGINAL_CATEGORIES_LIST[i]
+    discount_timer = None
+    notify_admins("⌛ Скидка закончилась, цены возвращены к стандартным.", type('', (), {'first_name':'Система', 'username':'bot', 'id':0}))
+
+def apply_discount_to_all(percent):
+    global tariffs_data, categories_list
+    factor = (100 - percent) / 100.0
+    for k, v in tariffs_data.items():
+        orig = ORIGINAL_TARIFFS_DATA[k]
+        v['price_rub'] = int(orig['price_rub'] * factor)
+        v['price_usd'] = round(orig['price_usd'] * factor, 2)
+        v['price_uah'] = int(orig['price_uah'] * factor)
+        v['price_stars'] = int(orig['price_stars'] * factor)
+        
+        # Обновляем текст в описании
+        desc = orig['description']
+        desc = desc.replace(f"Цена: {orig['price_rub']}₽", f"Цена: {v['price_rub']}₽ (🔥 СКИДКА {percent}%)")
+        v['description'] = desc
+        
+    for i in range(len(categories_list)):
+        orig_str = ORIGINAL_CATEGORIES_LIST[i]
+        orig_price = ORIGINAL_TARIFFS_DATA[i]['price_rub']
+        new_price = tariffs_data[i]['price_rub']
+        categories_list[i] = orig_str.replace(f"{orig_price}₽", f"{new_price}₽")
 
 # Функция для отправки уведомлений админам
 def notify_admins(action, user, details=""):
@@ -465,12 +523,38 @@ def admin_panel(message):
     if message.from_user.id not in ADMIN_IDS:
         return
     
-    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup = types.InlineKeyboardMarkup(row_width=2)
     btn1 = types.InlineKeyboardButton("📋 Ожидающие квитанции", callback_data='admin_pending')
     btn2 = types.InlineKeyboardButton("📊 Статистика", callback_data='admin_stats')
+    btn3 = types.InlineKeyboardButton("📢 Рассылка", callback_data='admin_broadcast_btn')
+    btn4 = types.InlineKeyboardButton("🎁 Скидки", callback_data='admin_discount_btn')
     markup.add(btn1, btn2)
+    markup.add(btn3, btn4)
     
     bot.send_message(message.chat.id, "🔐 Админ-панель", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data in ['admin_broadcast_btn', 'admin_discount_btn'])
+def admin_extra_menus(call):
+    if call.from_user.id not in ADMIN_IDS:
+        return
+    
+    if call.data == 'admin_broadcast_btn':
+        admin_states_data[call.from_user.id] = {'action': 'broadcast'}
+        bot.send_message(call.message.chat.id, "📢 Введите текст (или отправьте фото с текстом) для рассылки всем пользователям:")
+    elif call.data == 'admin_discount_btn':
+        admin_states_data[call.from_user.id] = {'action': 'discount_text'}
+        bot.send_message(call.message.chat.id, "🎁 Введите текст сообщения о скидке, который улетит всем пользователям:")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('disc_'))
+def set_discount_percent(call):
+    if call.from_user.id not in ADMIN_IDS:
+        return
+    
+    percent = int(call.data.split('_')[1])
+    if call.from_user.id in admin_states_data and admin_states_data[call.from_user.id].get('action') == 'discount_percent':
+        admin_states_data[call.from_user.id]['percent'] = percent
+        admin_states_data[call.from_user.id]['action'] = 'discount_duration'
+        bot.send_message(call.message.chat.id, f"Выбрана скидка {percent}%.\n\n⏳ Введите на сколько времени добавить скидку (например: 1m, 1h, 1d):")
 
 @bot.callback_query_handler(func=lambda call: call.data == 'admin_pending')
 def admin_pending(call):
@@ -523,16 +607,6 @@ def approve_receipt(call):
         user_id = receipt[1]
         update_receipt_status(receipt_id, 'approved')
         
-        # Отправляем уведомление пользователю
-  
-            
-                
-           
-
-           
-        
-         
-    
         bot.answer_callback_query(call.id, "✅ Квитанция одобрена")
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
         bot.send_message(call.message.chat.id, f"✅ Квитанция #{receipt_id} одобрена")
@@ -633,39 +707,59 @@ def start(message):
         message.from_user.first_name
     )
     
-    # Главное меню с кнопками
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    # Главное меню с кнопками (Reply Keyboard)
+    markup_reply = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     btn1 = types.KeyboardButton("🦋 Тарuфы 🦋")
     btn2 = types.KeyboardButton("🦋 Моя подnuска 🦋")
     btn3 = types.KeyboardButton("🦋 Доказательства 🦋")
     btn4 = types.KeyboardButton("🦋 Тех.поддержка 🦋")
-    markup.add(btn1, btn2, btn3, btn4)
+    markup_reply.add(btn1, btn2, btn3, btn4)
     
-    welcome_text = """
-🦋Чтобы ознакомиться с тарифом, выберите необходимый, нажав на соответствующую кнопку🦋
+    # Чтобы отобразить нижнюю клавиатуру без конфликтов с инлайн кнопками
+    bot.send_message(message.chat.id, "Открыто главное меню 👇", reply_markup=markup_reply)
+    
+    welcome_text = """<b>🔥 Для того чтобы ознакомиться с тарифом, выберите необходимый, нажав на соответствующую кнопку 🔥
 
-🖐️Добро пожаловать
- 
- 🦋В нашем боте, в отличие от других, описания тарифов полностью совпадают с их содержанием!🦋
+🖐️ Добро пожаловать!!
+
+🌀 В нашем боте, в отличие от других, описания тарифов полностью совпадают с их содержанием! 🌀
  
 Преимущество нашего бота:
- 
- ✔️Имеем большое количество контента разных категорий🦋☁️
- 
- ✔️Цена соответсвует качеству контента(никакого шлака и плохого качества)☁️
- 
- ✔️Быстрая тех.поддержка☁️
- 
- ✔️Моментальная выдача тøваров⚡️☁️
- 
-✔️ПОЛНАЯ анонuмность🔮☁️
- 
-  ✔️Самые красивые дeвочku в отличном качестве (FULL EXCLUSIVE)🍓☁️
- 
- ✔️Самые низкиe цены💸☁️
-"""
+
+┃☱ ✔️ Имеем большое количество контента разных категорий ☁️
+┃☱ ✔️ Цена соответствует качеству контента (без какого либо шлака и плохого качества) 🎩
+┃☱ ✔️ Быстрая тех.поддержка ☁️
+┃☱ ✔️ Моментальная выдача тøваров
+┃☱ ✔️ ПОЛНАЯ анонuмность 🔮
+┃☱ ✔️ Самые красивые дeвочku в отличной форме [FULL EXCLUSIVE] 🍓
+┃☱ ✔️ Самые низкие цены 💸</b>"""
+
+    # Инлайн клавиатура под фото
+    markup_inline = types.InlineKeyboardMarkup(row_width=2)
+    in_btn1 = types.InlineKeyboardButton("🦋 Тарuфы 🦋", callback_data='show_categories')
+    in_btn2 = types.InlineKeyboardButton("🦋 Моя подnuска 🦋", callback_data='show_sub')
+    in_btn3 = types.InlineKeyboardButton("🦋 Доказательства 🦋", callback_data='show_proof')
+    in_btn4 = types.InlineKeyboardButton("🦋 Тех.поддержка 🦋", callback_data='show_support')
+    markup_inline.add(in_btn1, in_btn2, in_btn3, in_btn4)
     
-    bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
+    photo_url = "https://radika1.link/2026/03/09/1000227939efed780b77f5f16a.jpg"
+    
+    try:
+        bot.send_photo(
+            message.chat.id, 
+            photo_url, 
+            caption=welcome_text, 
+            parse_mode='HTML', 
+            reply_markup=markup_inline
+        )
+    except Exception as e:
+        # Резервный вариант, если фото не загрузится (ссылка недоступна и т.п.)
+        bot.send_message(
+            message.chat.id, 
+            welcome_text, 
+            parse_mode='HTML', 
+            reply_markup=markup_inline
+        )
     
     # Уведомление админам о новом пользователе
     notify_admins("🚀 Новый пользователь запустил бота", message.from_user)
@@ -724,6 +818,31 @@ def support(message):
     
     bot.send_message(message.chat.id, support_text, parse_mode='HTML')
 
+# ====== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ ИНЛАЙН-КНОПОК ИЗ МЕНЮ СТАРТ ======
+
+@bot.callback_query_handler(func=lambda call: call.data == 'show_sub')
+def call_my_subscription(call):
+    msg = call.message
+    msg.from_user = call.from_user
+    my_subscription(msg)
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'show_proof')
+def call_proof(call):
+    msg = call.message
+    msg.from_user = call.from_user
+    proof(msg)
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'show_support')
+def call_support(call):
+    msg = call.message
+    msg.from_user = call.from_user
+    support(msg)
+    bot.answer_callback_query(call.id)
+
+# ===============================================================
+
 @bot.callback_query_handler(func=lambda call: call.data == 'show_categories')
 def show_categories(call):
     markup = types.InlineKeyboardMarkup(row_width=1)
@@ -732,12 +851,24 @@ def show_categories(call):
         btn = types.InlineKeyboardButton(cat, callback_data=f'view_{i}')
         markup.add(btn)
     
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text="🦋Чтобы ознакомиться с тарифом, выберите необходимый, нажав на соответствующую кнопку🦋",
-        reply_markup=markup
-    )
+    # Если это было фото из /start, то редактируем подпись, иначе просто текст
+    try:
+        if call.message.content_type == 'photo':
+            bot.edit_message_caption(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                caption="🦋Чтобы ознакомиться с тарифом, выберите необходимый, нажав на соответствующую кнопку🦋",
+                reply_markup=markup
+            )
+        else:
+            bot.edit_message_text(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text="🦋Чтобы ознакомиться с тарифом, выберите необходимый, нажав на соответствующую кнопку🦋",
+                reply_markup=markup
+            )
+    except:
+        pass
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('view_'))
 def view_tariff(call):
@@ -756,17 +887,27 @@ def view_tariff(call):
     markup.add(btn5)
     markup.add(btn_back)
     
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=tariffs_data[index]["description"],
-        reply_markup=markup
-    )
+    try:
+        if call.message.content_type == 'photo':
+            bot.edit_message_caption(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                caption=tariffs_data[index]["description"],
+                reply_markup=markup
+            )
+        else:
+            bot.edit_message_text(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=tariffs_data[index]["description"],
+                reply_markup=markup
+            )
+    except:
+        pass
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('pay_card_'))
 def pay_card(call):
-    # Исправлено: правильное извлечение индекса
-    index = int(call.data.split('_')[2])  # Берем третий элемент после разделения
+    index = int(call.data.split('_')[2])
     tariff = tariffs_data[index]
     
     card_number = PAYMENT_SETTINGS['card_number']
@@ -784,13 +925,25 @@ def pay_card(call):
     btn2 = types.InlineKeyboardButton("✖️ Отменить", callback_data='show_categories')
     markup.add(btn1, btn2)
     
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=text,
-        reply_markup=markup,
-        parse_mode='HTML'
-    )
+    try:
+        if call.message.content_type == 'photo':
+            bot.edit_message_caption(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                caption=text,
+                reply_markup=markup,
+                parse_mode='HTML'
+            )
+        else:
+            bot.edit_message_text(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=text,
+                reply_markup=markup,
+                parse_mode='HTML'
+            )
+    except:
+        pass
     
     notify_admins(
         "💳 Запрос на оплату картой РФ", 
@@ -800,8 +953,7 @@ def pay_card(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('pay_ukr_card_'))
 def pay_ukr_card(call):
-    # Исправлено: правильное извлечение индекса
-    index = int(call.data.split('_')[3])  # Берем четвертый элемент (pay_ukr_card_11)
+    index = int(call.data.split('_')[3])
     tariff = tariffs_data[index]
     
     ukr_card_number = PAYMENT_SETTINGS['ukr_card_number']
@@ -820,13 +972,25 @@ def pay_ukr_card(call):
     btn2 = types.InlineKeyboardButton("✖️ Отменить", callback_data='show_categories')
     markup.add(btn1, btn2)
     
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=text,
-        reply_markup=markup,
-        parse_mode='HTML'
-    )
+    try:
+        if call.message.content_type == 'photo':
+            bot.edit_message_caption(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                caption=text,
+                reply_markup=markup,
+                parse_mode='HTML'
+            )
+        else:
+            bot.edit_message_text(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=text,
+                reply_markup=markup,
+                parse_mode='HTML'
+            )
+    except:
+        pass
     
     notify_admins(
         "💳 Запрос на оплату картой УКР", 
@@ -834,14 +998,11 @@ def pay_ukr_card(call):
         f"Тариф: {tariff['name']}\nСумма: {tariff['price_uah']}₴"
     )
 
-# ИСПРАВЛЕННАЯ ФУНКЦИЯ ДЛЯ CRYPTOBOT
 @bot.callback_query_handler(func=lambda call: call.data.startswith('pay_cryptobot_'))
 def pay_cryptobot(call):
-    # Используем split для надежного получения ID тарифа
     index = int(call.data.split('_')[2]) 
     tariff = tariffs_data[index]
     
-    # Добавляем кнопку с ссылкой на CryptoBot
     markup = types.InlineKeyboardMarkup(row_width=2)
     btn_link = types.InlineKeyboardButton("🔗 Перейти в CryptoBot", url=PAYMENT_SETTINGS['crypto_bot_link'])
     btn_paid = types.InlineKeyboardButton("✅ Я оплатил", callback_data=f'paid_{index}_cryptobot')
@@ -859,12 +1020,23 @@ def pay_cryptobot(call):
 3. После оплаты нажмите "Я оплатил"
 4. Отправьте скриншот подтверждения"""
 
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=text,
-        reply_markup=markup
-    )
+    try:
+        if call.message.content_type == 'photo':
+            bot.edit_message_caption(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                caption=text,
+                reply_markup=markup
+            )
+        else:
+            bot.edit_message_text(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=text,
+                reply_markup=markup
+            )
+    except:
+        pass
     
     notify_admins(
         "🤖 Запрос на оплату через CryptoBot", 
@@ -872,21 +1044,16 @@ def pay_cryptobot(call):
         f"Тариф: {tariff['name']}\nСумма: {tariff['price_usd']}$"
     )
 
-
-# Добавьте этот обработчик после pay_cryptobot
 @bot.callback_query_handler(func=lambda call: call.data.startswith('pay_crypto_'))
 def pay_crypto(call):
-    # Извлекаем индекс тарифа
     parts = call.data.split('_')
     if len(parts) >= 3:
-        index = int(parts[2])  # pay_crypto_0
+        index = int(parts[2])
     else:
-        # Альтернативный способ если формат другой
         index = int(call.data[10:])
     
     tariff = tariffs_data[index]
     
-    # Создаем клавиатуру с информацией
     markup = types.InlineKeyboardMarkup(row_width=2)
     btn_paid = types.InlineKeyboardButton("✅ Я оплатил", callback_data=f'paid_{index}_crypto')
     btn_cancel = types.InlineKeyboardButton("✖️ Отменить", callback_data='show_categories')
@@ -909,13 +1076,25 @@ def pay_crypto(call):
 
 ⚠️ После оплаты нажмите кнопку "✅ Я оплатил" и отправьте скриншот подтверждения"""
 
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=text,
-        reply_markup=markup,
-        parse_mode='HTML'
-    )
+    try:
+        if call.message.content_type == 'photo':
+            bot.edit_message_caption(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                caption=text,
+                reply_markup=markup,
+                parse_mode='HTML'
+            )
+        else:
+            bot.edit_message_text(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=text,
+                reply_markup=markup,
+                parse_mode='HTML'
+            )
+    except:
+        pass
     
     notify_admins(
         "💵 Запрос на оплату криптовалютой", 
@@ -923,11 +1102,9 @@ def pay_crypto(call):
         f"Тариф: {tariff['name']}\nСумма: {tariff['price_usd']}$"
     )
 
-
 @bot.callback_query_handler(func=lambda call: call.data.startswith('pay_stars_'))
 def pay_stars(call):
-    # Исправлено: правильное извлечение индекса
-    index = int(call.data.split('_')[2])  # Берем третий элемент после разделения
+    index = int(call.data.split('_')[2])
     tariff = tariffs_data[index]
     
     text = f"""Тариф: {tariff['name']}
@@ -950,12 +1127,23 @@ def pay_stars(call):
     btn2 = types.InlineKeyboardButton("✖️ Отменить", callback_data='show_categories')
     markup.add(btn1, btn2)
     
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=text,
-        reply_markup=markup
-    )
+    try:
+        if call.message.content_type == 'photo':
+            bot.edit_message_caption(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                caption=text,
+                reply_markup=markup
+            )
+        else:
+            bot.edit_message_text(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=text,
+                reply_markup=markup
+            )
+    except:
+        pass
     
     notify_admins(
         "⭐️ Запрос на оплату Stars", 
@@ -967,7 +1155,7 @@ def pay_stars(call):
 def paid(call):
     parts = call.data.split('_')
     index = int(parts[1])
-    method = parts[2]  # Здесь будет 'cryptobot' для CryptoBot
+    method = parts[2]
     
     text = """💰 Оплатили?
 
@@ -979,17 +1167,27 @@ def paid(call):
     btn_cancel = types.InlineKeyboardButton("✖️ Отменить", callback_data='show_categories')
     markup.add(btn_back, btn_cancel)
     
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=text,
-        reply_markup=markup
-    )
+    try:
+        if call.message.content_type == 'photo':
+            bot.edit_message_caption(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                caption=text,
+                reply_markup=markup
+            )
+        else:
+            bot.edit_message_text(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=text,
+                reply_markup=markup
+            )
+    except:
+        pass
     
-    # Сохраняем состояние ожидания квитанции
     user_states[call.from_user.id] = {
         "tariff_index": index,
-        "payment_method": method,  # Сохраняем как есть - 'cryptobot'
+        "payment_method": method,
         "waiting_receipt": True
     }
 
@@ -997,21 +1195,74 @@ def paid(call):
 def handle_receipt(message):
     user_id = message.from_user.id
     
+    # Обработка новых функций админа: Рассылка и Скидки
+    if user_id in admin_states_data:
+        state = admin_states_data[user_id]
+        
+        if state['action'] == 'broadcast':
+            text = message.text or message.caption
+            photo = message.photo[-1].file_id if message.content_type == 'photo' else None
+            count = broadcast_to_users(text, photo)
+            bot.reply_to(message, f"✅ Рассылка успешно отправлена {count} пользователям!")
+            del admin_states_data[user_id]
+            return
+            
+        elif state['action'] == 'discount_text':
+            state['text'] = message.text or message.caption
+            state['photo'] = message.photo[-1].file_id if message.content_type == 'photo' else None
+            state['action'] = 'discount_percent'
+            
+            markup = types.InlineKeyboardMarkup(row_width=4)
+            markup.add(
+                types.InlineKeyboardButton("10%", callback_data="disc_10"),
+                types.InlineKeyboardButton("15%", callback_data="disc_15"),
+                types.InlineKeyboardButton("25%", callback_data="disc_25"),
+                types.InlineKeyboardButton("50%", callback_data="disc_50")
+            )
+            bot.send_message(user_id, "Выберите размер скидки:", reply_markup=markup)
+            return
+            
+        elif state['action'] == 'discount_duration':
+            dur_str = (message.text or "").strip().lower()
+            seconds = 0
+            if dur_str.endswith('m'): seconds = int(dur_str[:-1]) * 60
+            elif dur_str.endswith('h'): seconds = int(dur_str[:-1]) * 3600
+            elif dur_str.endswith('d'): seconds = int(dur_str[:-1]) * 86400
+            else:
+                bot.send_message(user_id, "❌ Неверный формат! Введите время корректно (например: 1m, 1h, 1d):")
+                return
+            
+            percent = state['percent']
+            text = state['text']
+            photo = state.get('photo')
+            
+            # Применяем скидку
+            apply_discount_to_all(percent)
+            
+            # Запускаем таймер на отмену скидки
+            global discount_timer
+            if discount_timer:
+                discount_timer.cancel()
+            discount_timer = threading.Timer(seconds, remove_discount)
+            discount_timer.start()
+            
+            # Делаем рассылку
+            count = broadcast_to_users(text, photo)
+            bot.reply_to(message, f"✅ Скидка {percent}% применена на {dur_str} и рассылка отправлена {count} пользователям!")
+            del admin_states_data[user_id]
+            return
+
     # Проверяем, находится ли админ в режиме ответа
     if user_id in admin_reply_states:
         state = admin_reply_states[user_id]
         target_user_id = state['user_id']
         receipt_id = state['receipt_id']
         
-        # Отправляем сообщение пользователю без изменений
         try:
-            # Если это фото с подписью
             if message.content_type == 'photo' and message.caption:
                 bot.send_photo(target_user_id, message.photo[-1].file_id, caption=message.caption)
-            # Если просто фото
             elif message.content_type == 'photo':
                 bot.send_photo(target_user_id, message.photo[-1].file_id)
-            # Если текст
             else:
                 bot.send_message(target_user_id, message.text)
             
@@ -1019,7 +1270,6 @@ def handle_receipt(message):
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка при отправке: {e}")
         
-        # Очищаем состояние админа
         del admin_reply_states[user_id]
         return
     
@@ -1031,22 +1281,20 @@ def handle_receipt(message):
             "card": "картой РФ",
             "ukr_card": "картой УКР",
             "crypto": "криптовалютой",
-            "cryptobot": "CryptoBot",  # ИСПРАВЛЕНО: теперь ключ совпадает с method
+            "cryptobot": "CryptoBot",
             "stars": "Stars"
         }
         method = method_map.get(state["payment_method"], state["payment_method"])
         
-        # Определяем сумму в зависимости от метода оплаты
         if state["payment_method"] == "card":
             amount = tariff['price_rub']
         elif state["payment_method"] == "ukr_card":
             amount = tariff['price_uah']
-        elif state["payment_method"] in ["crypto", "cryptobot"]:  # ИСПРАВЛЕНО: добавлен cryptobot
+        elif state["payment_method"] in ["crypto", "cryptobot"]:
             amount = tariff['price_usd']
-        else:  # stars
+        else:
             amount = tariff['price_stars']
         
-        # Сохраняем квитанцию в БД
         if message.content_type == 'photo':
             receipt_id = add_receipt(
                 user_id, 
@@ -1057,7 +1305,6 @@ def handle_receipt(message):
                 message.photo[-1].file_id
             )
             
-            # Уведомление админам с фото
             caption = f"📸 Получена квитанция (фото) #{receipt_id}\n\n👤 Пользователь: {message.from_user.first_name} (@{message.from_user.username}) ID: {user_id}\nТариф: {tariff['name']}\nСпособ оплаты: {method}\nСумма: {amount}"
             notify_admins_photo(message.from_user, message.photo[-1].file_id, caption)
         else:
@@ -1069,17 +1316,14 @@ def handle_receipt(message):
                 message.text
             )
             
-            # Уведомление админам с текстом
             notify_admins(
                 f"📝 Получена квитанция (текст) #{receipt_id}", 
                 message.from_user,
                 f"Тариф: {tariff['name']}\nСпособ оплаты: {method}\nСумма: {amount}\n\nТекст: {message.text}"
             )
         
-        # Ответ пользователю
         bot.reply_to(message, "✅ Спасибо! Квитанция отправлена на проверку, вы получите уведомление как только её проверят.")
         
-        # Возвращаем в главное меню
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
         btn1 = types.KeyboardButton("🦋 Тарuфы 🦋")
         btn2 = types.KeyboardButton("🦋 Моя подnuска 🦋")
@@ -1093,7 +1337,6 @@ def handle_receipt(message):
             reply_markup=markup
         )
         
-        # Очищаем состояние
         del user_states[user_id]
 
 bot.polling()
