@@ -13,7 +13,7 @@ ADMIN_IDS = [760217595, 1486385025]  # Список админов
 
 # Настройки оплаты (можно менять)
 PAYMENT_SETTINGS = {
-    "card_number": "2204321114637127",
+    "card_number": "2204120137259012",
     "ukr_card_number": "Оплата украинской картой, не поддерживается, на время",  # Украинская карта
     "crypto_bot_link": "http://t.me/send?start=IVYmg0VNAOof",
     "ton_wallet": "UQDZLYLq_FZkjdBSKxKC75xDV_q4j1Jl9yY4SIbg5Rkk6Op_",
