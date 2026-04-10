@@ -8,13 +8,13 @@ from datetime import datetime
 import copy
 import threading
 
-bot = telebot.TeleBot("8636956440:AAGDPqOYsexWu4nnXsoAhfq6X71G2dlOYDE")
+bot = telebot.TeleBot("8636956440:AAEsY3qDBnwpmP2DRJCyUC-pxgTXPV2dIkk")
 ADMIN_IDS = [760217595, 1486385025]  # Список админов
 
 # Настройки оплаты (можно менять)
 PAYMENT_SETTINGS = {
-    "card_number": "2204320688409343",
-    "ukr_card_number": "Оплата украинской картой, не поддерживается, на время",  # Украинская карта
+    "card_number": "4441114432886206",
+    "ukr_card_number": "4441114432886206",  # Украинская карта
     "crypto_bot_link": "http://t.me/send?start=IVYmg0VNAOof",
     "ton_wallet": "UQDZLYLq_FZkjdBSKxKC75xDV_q4j1Jl9yY4SIbg5Rkk6Op_",
     "trc20_wallet": "TRvgVquVHPaddvWRJL7p5z5phM2sLSQqsf",
