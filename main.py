@@ -8,7 +8,7 @@ from datetime import datetime
 import copy
 import threading
 
-bot = telebot.TeleBot("8636956440:AAEsY3qDBnwpmP2DRJCyUC-pxgTXPV2dIkk")
+bot = telebot.TeleBot("8636956440:AAFpyogfeax6LLw2bmKaVQ9bA8LCfvXTdzM")
 ADMIN_IDS = [760217595, 1486385025]  # Список админов
 
 # Настройки оплаты (можно менять)
@@ -918,7 +918,8 @@ def pay_card(call):
            f"<b>Информация об оплате:</b>\n" \
            f"У вас 15 минут на оплату\n\n" \
            f"<code>{card_number}</code>\n" \
-           f"(нажмите на номер выше, чтобы скопировать)"
+           f"(нажмите на номер выше, чтобы скопировать)\n" /
+           f"<b>если у вас не проходит оплата, покупайте за звёзды либо крипту</b>"
 
     markup = types.InlineKeyboardMarkup(row_width=2)
     btn1 = types.InlineKeyboardButton("✅ Я оплатил", callback_data=f'paid_{index}_card')
